@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { openSessionsFolder, listSessionFiles, formatDate, formatSize } from '../lib/sessionFiles';
+import { formatDate, formatSize } from '../lib/sessionFiles';
 import { createSignaling } from '../lib/signaling';
 import { RTC_CONFIG, sendFiles } from '../lib/transfer';
+import { dbGet, dbSet } from '../lib/localStore';
+import {
+  listSessionsFromHandle,
+  inferHome,
+} from '../lib/projectUtils';
 
 const LOCAL_API = 'http://localhost:3001';
-
-// Claude encodes project paths as -home-user-projects-foo → ~/projects/foo
-function decodeProjectFolder(folder) {
-  return folder.replace(/^-/, '~/').replaceAll('-', '/').replace('~/', '~/');
-}
 
 async function fetchLocalSessions() {
   const res = await fetch(`${LOCAL_API}/sessions`);
@@ -22,88 +22,148 @@ async function fetchSessionContent(relativePath) {
   return res.text();
 }
 
+// step: init | setup-pick | setup-home | loading | listing | empty | waiting | transferring | done | error
 export default function Sender({ onBack }) {
-  const [step, setStep] = useState('loading'); // loading | listing | waiting | transferring | done | error
+  const [step, setStep] = useState('init');
   const [sessions, setSessions] = useState([]);
   const [selected, setSelected] = useState(null);
   const [code, setCode] = useState('');
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState('');
-  const [useLocalAPI, setUseLocalAPI] = useState(true);
 
-  const stepRef = useRef('loading');
+  // mode: 'server' | 'fsa'
+  const [mode, setMode] = useState(null);
+  const [fsaHandle, setFsaHandle] = useState(null);
+  const [homeInput, setHomeInput] = useState('');
+
+  const stepRef = useRef('init');
   const sigRef = useRef(null);
   const pcRef = useRef(null);
 
-  function updateStep(s) {
-    stepRef.current = s;
-    setStep(s);
-  }
+  function updateStep(s) { stepRef.current = s; setStep(s); }
 
+  // On mount: try local server, else try stored FSA handle
   useEffect(() => {
-    // Try to auto-load sessions from local server
-    fetchLocalSessions()
-      .then((sessions) => {
+    (async () => {
+      try {
+        const sessions = await fetchLocalSessions();
+        setMode('server');
         setSessions(sessions);
         updateStep(sessions.length ? 'listing' : 'empty');
-      })
-      .catch(() => {
-        // Local server not reachable — fall back to file picker
-        setUseLocalAPI(false);
-        updateStep('idle');
-      });
-
-    return () => {
-      sigRef.current?.close();
-      pcRef.current?.close();
-    };
+      } catch {
+        const handle = await dbGet('claudeHandle').catch(() => null);
+        if (handle) {
+          const perm = await handle.queryPermission({ mode: 'readwrite' });
+          if (perm === 'granted') {
+            await loadFsaSessions(handle);
+            return;
+          }
+          // Permission needs re-requesting (requires user gesture)
+          setFsaHandle(handle);
+          updateStep('reconnect');
+          return;
+        }
+        updateStep('setup-pick');
+      }
+    })();
+    return () => { sigRef.current?.close(); pcRef.current?.close(); };
   }, []);
 
-  async function handleOpenFolder() {
+  async function loadFsaSessions(handle) {
+    setMode('fsa');
+    setFsaHandle(handle);
+    updateStep('loading');
+    try {
+      const sessions = await listSessionsFromHandle(handle);
+      setSessions(sessions);
+      updateStep(sessions.length ? 'listing' : 'empty');
+    } catch (e) {
+      setError(e.message);
+      updateStep('error');
+    }
+  }
+
+  // Step 1 of setup: pick the ~/.claude/projects folder
+  async function handlePickFolder() {
     setError('');
     try {
-      const dir = await openSessionsFolder();
-      const files = await listSessionFiles(dir);
-      if (!files.length) {
-        setError('No .jsonl files found. Open a folder inside ~/.claude/projects/');
-        return;
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      // Infer HOME from existing folder names
+      const folderNames = [];
+      for await (const h of handle.values()) {
+        if (h.kind === 'directory') folderNames.push(h.name);
       }
-      // Normalize to the same shape as local API sessions
-      setSessions(files.map((s) => ({
-        name: s.name,
-        folder: s.folder,
-        relativePath: null,
-        size: s.size,
-        lastModified: s.lastModified,
-        getText: () => s.file.text(),
-      })));
-      updateStep('listing');
+      const inferred = inferHome(folderNames);
+      setHomeInput(inferred);
+      setFsaHandle(handle);
+      updateStep('setup-home');
     } catch (e) {
       if (e.name !== 'AbortError') setError(e.message);
     }
   }
 
+  // Step 2 of setup: confirm HOME and save
+  async function handleConfirmHome() {
+    const home = homeInput.trim();
+    if (!home || !home.startsWith('/')) {
+      setError('Enter an absolute path like /home/username');
+      return;
+    }
+    await dbSet('claudeHandle', fsaHandle);
+    await dbSet('home', home);
+    await loadFsaSessions(fsaHandle);
+  }
+
+  // Re-request permission for stored handle (after page reload)
+  async function handleReconnect() {
+    setError('');
+    try {
+      const handle = await dbGet('claudeHandle');
+      if (!handle) { updateStep('setup-pick'); return; }
+      const perm = await handle.requestPermission({ mode: 'readwrite' });
+      if (perm === 'granted') {
+        await loadFsaSessions(handle);
+      } else {
+        updateStep('setup-pick');
+      }
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function handleRefresh() {
+    setSelected(null);
+    if (mode === 'server') {
+      updateStep('loading');
+      try {
+        const sessions = await fetchLocalSessions();
+        setSessions(sessions);
+        updateStep(sessions.length ? 'listing' : 'empty');
+      } catch { updateStep('listing'); }
+    } else if (fsaHandle) {
+      await loadFsaSessions(fsaHandle);
+    }
+  }
+
   function getSelected() {
     if (!selected) return null;
-    // Local API sessions need getText wired up here
-    if (useLocalAPI && selected.relativePath) {
+    if (mode === 'server' && selected.relativePath) {
       return { ...selected, getText: () => fetchSessionContent(selected.relativePath) };
     }
-    return selected; // file picker sessions already have getText
+    if (mode === 'fsa' && selected.fileHandle) {
+      return { ...selected, getText: () => selected.fileHandle.getFile().then((f) => f.text()) };
+    }
+    return selected;
   }
 
   async function handleShare() {
     const session = getSelected();
     if (!session) return;
     setError('');
-
     let pc = null;
 
     const sig = createSignaling(async (msg) => {
-      if (msg.type === 'created') {
-        setCode(msg.code);
-        updateStep('waiting');
-      }
+      if (msg.type === 'created') { setCode(msg.code); updateStep('waiting'); }
 
       if (msg.type === 'receiver-joined') {
         pc = new RTCPeerConnection(RTC_CONFIG);
@@ -147,21 +207,7 @@ export default function Sender({ onBack }) {
     sig.onOpen(() => sig.send({ type: 'create' }));
   }
 
-  async function handleRefresh() {
-    updateStep('loading');
-    setSelected(null);
-    try {
-      const sessions = await fetchLocalSessions();
-      setSessions(sessions);
-      updateStep(sessions.length ? 'listing' : 'empty');
-    } catch {
-      updateStep('listing');
-    }
-  }
-
-  const progressPct = progress
-    ? Math.round((progress.chunk / progress.totalChunks) * 100)
-    : 0;
+  const progressPct = progress ? Math.round((progress.chunk / progress.totalChunks) * 100) : 0;
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6">
@@ -169,8 +215,70 @@ export default function Sender({ onBack }) {
         <button onClick={onBack} className="text-gray-500 hover:text-gray-300 text-sm mb-8 flex items-center gap-1 transition-colors">
           ← Back
         </button>
-
         <h1 className="text-2xl font-bold text-white mb-8">Share a Session</h1>
+
+        {/* INIT */}
+        {step === 'init' && (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
+            <div className="text-gray-400 text-sm animate-pulse">Loading…</div>
+          </div>
+        )}
+
+        {/* RECONNECT — stored handle needs permission re-grant */}
+        {step === 'reconnect' && (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
+            <div className="text-4xl mb-4">🔓</div>
+            <p className="text-white font-medium mb-2">Grant folder access</p>
+            <p className="text-gray-500 text-sm mb-6">
+              Permission to read <code className="bg-gray-800 px-1 rounded">~/.claude/projects</code> needs to be re-granted.
+            </p>
+            <button onClick={handleReconnect} className="bg-purple-600 hover:bg-purple-500 text-white font-medium px-6 py-2.5 rounded-xl transition-colors">
+              Grant Access
+            </button>
+            {error && <p className="text-red-400 text-sm mt-4">{error}</p>}
+          </div>
+        )}
+
+        {/* SETUP STEP 1 — pick folder */}
+        {step === 'setup-pick' && (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
+            <div className="text-4xl mb-4">📂</div>
+            <p className="text-white font-medium mb-2">Pick your Claude projects folder</p>
+            <p className="text-gray-500 text-sm mb-6">
+              Select <code className="bg-gray-800 px-1 rounded">~/.claude/projects</code> so the app can read your sessions.
+              Press <kbd className="bg-gray-800 px-1 rounded">Ctrl+H</kbd> to show hidden folders.
+            </p>
+            <button
+              onClick={handlePickFolder}
+              className="bg-purple-600 hover:bg-purple-500 text-white font-medium px-6 py-2.5 rounded-xl transition-colors"
+            >
+              Pick Folder
+            </button>
+            {error && <p className="text-red-400 text-sm mt-4">{error}</p>}
+          </div>
+        )}
+
+        {/* SETUP STEP 2 — confirm home dir */}
+        {step === 'setup-home' && (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8">
+            <p className="text-white font-medium mb-1">Confirm your home directory</p>
+            <p className="text-gray-500 text-sm mb-4">Used to decode session paths (e.g. /home/username).</p>
+            <input
+              type="text"
+              value={homeInput}
+              onChange={(e) => setHomeInput(e.target.value)}
+              placeholder="/home/username"
+              className="w-full bg-gray-950 border border-gray-700 focus:border-purple-500 rounded-xl px-4 py-3 text-sm font-mono text-gray-300 placeholder-gray-600 outline-none transition-colors mb-4"
+            />
+            {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+            <button
+              onClick={handleConfirmHome}
+              className="w-full bg-purple-600 hover:bg-purple-500 text-white font-medium py-2.5 rounded-xl transition-colors"
+            >
+              Continue
+            </button>
+          </div>
+        )}
 
         {/* LOADING */}
         {step === 'loading' && (
@@ -179,52 +287,20 @@ export default function Sender({ onBack }) {
           </div>
         )}
 
-        {/* IDLE — local server not available */}
-        {step === 'idle' && (
-          <div className="bg-gray-900 border border-yellow-900/50 rounded-2xl p-8 text-center">
-            <div className="text-4xl mb-4">⚠️</div>
-            <p className="text-yellow-400 font-medium mb-2 text-sm">Local server not running</p>
-            <p className="text-gray-400 text-sm mb-4">
-              The local server is required to read your Claude sessions.
-            </p>
-            <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 text-left mb-6">
-              <p className="text-gray-500 text-xs mb-2">Run this on your machine:</p>
-              <code className="text-green-400 text-xs block">
-                cd server &amp;&amp; node index.js
-              </code>
-            </div>
-            <p className="text-gray-600 text-xs mb-5">
-              Or pick the folder manually (no server needed):
-            </p>
-            <button
-              onClick={handleOpenFolder}
-              className="bg-gray-700 hover:bg-gray-600 text-white font-medium px-6 py-2.5 rounded-xl transition-colors text-sm"
-            >
-              Pick Sessions Folder Manually
-            </button>
-            {error && <p className="text-red-400 text-sm mt-4">{error}</p>}
-          </div>
-        )}
-
         {/* EMPTY */}
         {step === 'empty' && (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
-            <div className="text-4xl mb-4">🈳</div>
-            <p className="text-gray-400 text-sm">No sessions found in <code className="bg-gray-800 px-1 rounded">~/.claude/projects/</code></p>
+            <p className="text-gray-400 text-sm">No sessions found.</p>
             <button onClick={handleRefresh} className="mt-4 text-gray-500 hover:text-gray-300 text-sm transition-colors">Refresh</button>
           </div>
         )}
 
         {/* LISTING */}
-        {(step === 'listing') && (
+        {step === 'listing' && (
           <div>
             <div className="flex items-center justify-between mb-3">
               <p className="text-gray-400 text-sm">Select a session to share:</p>
-              {useLocalAPI && (
-                <button onClick={handleRefresh} className="text-gray-600 hover:text-gray-400 text-xs transition-colors">
-                  Refresh
-                </button>
-              )}
+              <button onClick={handleRefresh} className="text-gray-600 hover:text-gray-400 text-xs transition-colors">Refresh</button>
             </div>
             <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
               {sessions.map((s, i) => (
@@ -232,15 +308,13 @@ export default function Sender({ onBack }) {
                   key={i}
                   onClick={() => setSelected(s)}
                   className={`w-full text-left bg-gray-900 border rounded-xl p-4 transition-colors ${
-                    selected === s
-                      ? 'border-purple-500 bg-gray-800'
-                      : 'border-gray-800 hover:border-gray-700'
+                    selected === s ? 'border-purple-500 bg-gray-800' : 'border-gray-800 hover:border-gray-700'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className="text-white text-sm font-medium truncate">{s.title || s.name}</p>
-                      <p className="text-gray-500 text-xs mt-0.5 truncate">{decodeProjectFolder(s.folder)}</p>
+                      <p className="text-gray-500 text-xs mt-0.5 truncate font-mono">{s.folder}</p>
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-gray-400 text-xs">{formatSize(s.size)}</p>
@@ -250,12 +324,7 @@ export default function Sender({ onBack }) {
                 </button>
               ))}
             </div>
-            <div className="flex gap-3 mt-6 items-center">
-              {!useLocalAPI && (
-                <button onClick={handleOpenFolder} className="text-gray-500 hover:text-gray-300 text-sm transition-colors">
-                  Change folder
-                </button>
-              )}
+            <div className="flex gap-3 mt-6">
               <button
                 onClick={handleShare}
                 disabled={!selected}
@@ -289,10 +358,7 @@ export default function Sender({ onBack }) {
             <p className="text-white font-medium mb-1">Sending…</p>
             <p className="text-gray-500 text-xs mb-6">{progress?.name}</p>
             <div className="w-full bg-gray-800 rounded-full h-2">
-              <div
-                className="bg-purple-500 h-2 rounded-full transition-all duration-200"
-                style={{ width: `${progressPct}%` }}
-              />
+              <div className="bg-purple-500 h-2 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
             </div>
             <p className="text-gray-500 text-xs mt-3">{progressPct}%</p>
           </div>
@@ -310,9 +376,7 @@ export default function Sender({ onBack }) {
             >
               Share Another
             </button>
-            <button onClick={onBack} className="text-gray-500 hover:text-gray-300 text-sm transition-colors">
-              Go Home
-            </button>
+            <button onClick={onBack} className="text-gray-500 hover:text-gray-300 text-sm transition-colors">Go Home</button>
           </div>
         )}
 
