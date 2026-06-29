@@ -306,6 +306,24 @@ async function handleHTTP(req, res) {
     return;
   }
 
+  // Serve built React client
+  const DIST = path.join(__dirname, '..', 'client', 'dist');
+  if (fs.existsSync(DIST)) {
+    let filePath = path.join(DIST, url.pathname === '/' ? 'index.html' : url.pathname);
+    if (!fs.existsSync(filePath)) filePath = path.join(DIST, 'index.html'); // SPA fallback
+    const ext = path.extname(filePath);
+    const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
+                   '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
+    try {
+      const data = fs.readFileSync(filePath);
+      res.writeHead(200, { 'Content-Type': mime[ext] || 'application/octet-stream' });
+      res.end(data);
+    } catch {
+      res.writeHead(404); res.end('Not found');
+    }
+    return;
+  }
+
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Claude Session Sharing — Signaling Server');
 }

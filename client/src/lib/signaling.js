@@ -1,7 +1,12 @@
-const SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL || 'ws://localhost:3001';
+function getSignalingUrl() {
+  if (import.meta.env.VITE_SIGNALING_URL) return import.meta.env.VITE_SIGNALING_URL;
+  // Auto-detect: use same host as the page, just switch protocol
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}`;
+}
 
 export function createSignaling(onMessage, onClose) {
-  const ws = new WebSocket(SIGNALING_URL);
+  const ws = new WebSocket(getSignalingUrl());
   let openCallback = null;
 
   ws.onopen = () => openCallback?.();
@@ -18,7 +23,6 @@ export function createSignaling(onMessage, onClose) {
     close() { ws.close(); },
     onOpen(cb) {
       openCallback = cb;
-      // Handle race: WebSocket may already be open
       if (ws.readyState === WebSocket.OPEN) cb();
     },
   };

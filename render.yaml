@@ -1,10 +1,9 @@
 services:
   - type: web
-    name: claude-session-sharing-signal
+    name: claude-session-sharing
     env: node
-    rootDir: server
-    buildCommand: npm install
-    startCommand: node index.js
+    buildCommand: cd client && npm install && npm run build && cd ../server && npm install
+    startCommand: node server/index.js
     plan: free
     envVars:
       - key: PORT
