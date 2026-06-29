@@ -83,26 +83,32 @@ export default function Sender({ onBack }) {
     }
   }
 
-  // Step 1 of setup: pick the ~/.claude/projects folder
+  // Setup: pick the ~/.claude/projects folder, auto-detect HOME
   async function handlePickFolder() {
     setError('');
     try {
       const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-      // Infer HOME from existing folder names
       const folderNames = [];
       for await (const h of handle.values()) {
         if (h.kind === 'directory') folderNames.push(h.name);
       }
       const inferred = inferHome(folderNames);
-      setHomeInput(inferred);
-      setFsaHandle(handle);
-      updateStep('setup-home');
+      if (inferred) {
+        // HOME detected — save and go straight to listing
+        await dbSet('claudeHandle', handle);
+        await dbSet('home', inferred);
+        await loadFsaSessions(handle);
+      } else {
+        // No existing projects to infer from — ask once
+        setHomeInput('');
+        setFsaHandle(handle);
+        updateStep('setup-home');
+      }
     } catch (e) {
       if (e.name !== 'AbortError') setError(e.message);
     }
   }
 
-  // Step 2 of setup: confirm HOME and save
   async function handleConfirmHome() {
     const home = homeInput.trim();
     if (!home || !home.startsWith('/')) {
@@ -239,20 +245,24 @@ export default function Sender({ onBack }) {
           </div>
         )}
 
-        {/* SETUP STEP 1 — pick folder */}
+        {/* SETUP — pick folder (one-time) */}
         {step === 'setup-pick' && (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
             <div className="text-4xl mb-4">📂</div>
-            <p className="text-white font-medium mb-2">Pick your Claude projects folder</p>
-            <p className="text-gray-500 text-sm mb-6">
-              Select <code className="bg-gray-800 px-1 rounded">~/.claude/projects</code> so the app can read your sessions.
+            <p className="text-white font-medium mb-2">One-time setup</p>
+            <p className="text-gray-500 text-sm mb-2">
+              The browser can't access your files automatically — you need to pick the folder once.
+              After that, the app remembers it forever.
+            </p>
+            <p className="text-gray-600 text-xs mb-6">
+              Navigate to <code className="bg-gray-800 px-1 rounded">~/.claude/projects</code> and click Select.
               Press <kbd className="bg-gray-800 px-1 rounded">Ctrl+H</kbd> to show hidden folders.
             </p>
             <button
               onClick={handlePickFolder}
               className="bg-purple-600 hover:bg-purple-500 text-white font-medium px-6 py-2.5 rounded-xl transition-colors"
             >
-              Pick Folder
+              Pick ~/.claude/projects
             </button>
             {error && <p className="text-red-400 text-sm mt-4">{error}</p>}
           </div>

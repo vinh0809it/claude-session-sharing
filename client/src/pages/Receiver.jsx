@@ -110,7 +110,7 @@ export default function Receiver({ onBack }) {
     }
   }
 
-  // Setup step 1: pick folder
+  // Setup: pick folder, auto-detect HOME
   async function handlePickFolder() {
     setError('');
     try {
@@ -119,15 +119,21 @@ export default function Receiver({ onBack }) {
       for await (const h of handle.values()) {
         if (h.kind === 'directory') folderNames.push(h.name);
       }
-      setHomeInput(inferHome(folderNames));
-      setFsaHandle(handle);
-      setSetupStep('home');
+      const inferred = inferHome(folderNames);
+      if (inferred) {
+        await dbSet('claudeHandle', handle);
+        await dbSet('home', inferred);
+        await loadFsaProjects(handle, inferred);
+      } else {
+        setHomeInput('');
+        setFsaHandle(handle);
+        setSetupStep('home');
+      }
     } catch (e) {
       if (e.name !== 'AbortError') setError(e.message);
     }
   }
 
-  // Setup step 2: confirm HOME
   async function handleConfirmHome() {
     const home = homeInput.trim();
     if (!home || !home.startsWith('/')) { setError('Enter an absolute path like /home/username'); return; }
