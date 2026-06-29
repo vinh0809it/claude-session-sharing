@@ -109,6 +109,24 @@ export function inferHome(folderNames) {
   return '/' + best.replace(/^-/, '').replace(/-/g, '/');
 }
 
+// Read the real cwd from the first existing JSONL in a project folder handle.
+// This avoids the naive decode ambiguity (dashes vs slashes in project names).
+export async function getCwdFromProjectHandle(projHandle) {
+  for await (const fh of projHandle.values()) {
+    if (fh.kind !== 'file' || !fh.name.endsWith('.jsonl')) continue;
+    const file = await fh.getFile();
+    const text = await file.slice(0, 4096).text();
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (typeof obj.cwd === 'string' && obj.cwd.startsWith('/')) return obj.cwd;
+      } catch {}
+    }
+  }
+  return null;
+}
+
 // Save a session file into a ~/.claude/projects/ directory handle
 export async function saveToHandle(dirHandle, folder, fileName, content) {
   const projHandle = await dirHandle.getDirectoryHandle(folder, { create: true });

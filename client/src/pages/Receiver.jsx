@@ -9,6 +9,7 @@ import {
   rewriteCwd,
   listProjectsFromHandle,
   saveToHandle,
+  getCwdFromProjectHandle,
   inferHome,
 } from '../lib/projectUtils';
 
@@ -45,6 +46,7 @@ export default function Receiver({ onBack }) {
   const [selectedFolder, setSelectedFolder] = useState(null);
   const [showCustom, setShowCustom] = useState(false);
   const [customPath, setCustomPath] = useState('');
+  const [browseResolving, setBrowseResolving] = useState(false);
 
   // FSA setup state
   const [fsaHandle, setFsaHandle] = useState(null);
@@ -59,29 +61,28 @@ export default function Receiver({ onBack }) {
 
   function updateStep(s) { stepRef.current = s; setStep(s); }
 
-  // Detect mode on mount
+  // Detect mode on mount — FSA handle takes priority over local server
   useEffect(() => {
     (async () => {
+      const handle = await dbGet('claudeHandle').catch(() => null);
+      const home = await dbGet('home').catch(() => null);
+      if (handle && home) {
+        const perm = await handle.queryPermission({ mode: 'readwrite' });
+        if (perm === 'granted') {
+          await loadFsaProjects(handle, home);
+          return;
+        }
+        setFsaHandle(handle);
+        setFsaHome(home);
+        setMode('reconnect');
+        return;
+      }
+      // No stored handle — try local server as fallback
       try {
         const list = await fetchProjects();
         setProjects(list);
         setMode('server');
       } catch {
-        // Try stored FSA handle
-        const handle = await dbGet('claudeHandle').catch(() => null);
-        const home = await dbGet('home').catch(() => null);
-        if (handle && home) {
-          const perm = await handle.queryPermission({ mode: 'readwrite' });
-          if (perm === 'granted') {
-            await loadFsaProjects(handle, home);
-            return;
-          }
-          // perm === 'prompt': store handle for reconnect button
-          setFsaHandle(handle);
-          setFsaHome(home);
-          setMode('reconnect');
-          return;
-        }
         setMode('setup');
       }
     })();
@@ -140,6 +141,31 @@ export default function Receiver({ onBack }) {
     await dbSet('claudeHandle', fsaHandle);
     await dbSet('home', home);
     await loadFsaProjects(fsaHandle, home);
+  }
+
+  async function handleBrowse() {
+    setError('');
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      setBrowseResolving(true);
+      const sentinel = `.claude-share-${Date.now()}`;
+      const fh = await handle.getFileHandle(sentinel, { create: true });
+      const writable = await fh.createWritable();
+      await writable.write('tmp');
+      await writable.close();
+      try {
+        const res = await fetch(`${LOCAL_API}/resolve-tmp?name=${encodeURIComponent(sentinel)}`);
+        const data = await res.json().catch(() => null);
+        if (data?.dir) setCustomPath(data.dir);
+        else setError('Could not resolve path — type it manually.');
+      } finally {
+        await handle.removeEntry(sentinel).catch(() => {});
+        setBrowseResolving(false);
+      }
+    } catch (e) {
+      setBrowseResolving(false);
+      if (e.name !== 'AbortError') setError(e.message);
+    }
   }
 
   async function handleConnect() {
@@ -201,11 +227,28 @@ export default function Receiver({ onBack }) {
           for (const f of files) await saveViaServer({ folder: selectedFolder, name: f.name, content: f.content });
         }
       } else if (mode === 'fsa') {
-        const destPath = showCustom ? customPath.trim() : folderToDisplayPath(selectedFolder, fsaHome);
-        if (!destPath) { setError('Select or enter a destination'); return; }
-        let absPath = destPath.startsWith('~') ? fsaHome + destPath.slice(1) : destPath;
-        if (!absPath.startsWith('/')) absPath = fsaHome + '/' + absPath;
-        const folder = pathToFolder(absPath, fsaHome);
+        let absPath;
+        let folder;
+        if (showCustom) {
+          if (!customPath.trim()) { setError('Enter a project path'); return; }
+          let p = customPath.trim();
+          if (p.startsWith('~')) p = fsaHome + p.slice(1);
+          else if (!p.startsWith('/')) p = fsaHome + '/' + p;
+          absPath = p;
+          folder = pathToFolder(absPath, fsaHome);
+        } else {
+          if (!selectedFolder) { setError('Select a project'); return; }
+          folder = selectedFolder;
+          // Get the real cwd from an existing session to avoid naive-decode ambiguity
+          // (dashes in project names would be decoded as slashes otherwise)
+          const projHandle = await fsaHandle.getDirectoryHandle(folder);
+          absPath = await getCwdFromProjectHandle(projHandle);
+          if (!absPath) {
+            // No existing sessions — fall back to naive decode (user can correct via custom path)
+            absPath = folderToDisplayPath(folder, fsaHome);
+            if (absPath.startsWith('~')) absPath = fsaHome + absPath.slice(1);
+          }
+        }
         for (const f of files) {
           const newContent = rewriteCwd(f.content, absPath);
           await saveToHandle(fsaHandle, folder, f.name, newContent);
@@ -316,18 +359,34 @@ export default function Receiver({ onBack }) {
       )}
 
       {showCustom && (
-        <div className="mb-3">
-          <input
-            type="text"
-            value={customPath}
-            onChange={(e) => setCustomPath(e.target.value)}
-            placeholder={mode === 'fsa' ? '~/projects/my-project' : '~/projects/my-project'}
-            className="w-full bg-gray-950 border border-gray-700 focus:border-blue-500 rounded-lg px-3 py-2 text-sm font-mono text-gray-300 placeholder-gray-600 outline-none"
-          />
+        <div className="mb-3 space-y-2">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={customPath}
+              onChange={(e) => setCustomPath(e.target.value)}
+              placeholder="~/projects/my-project"
+              className="flex-1 bg-gray-950 border border-gray-700 focus:border-blue-500 rounded-lg px-3 py-2 text-sm font-mono text-gray-300 placeholder-gray-600 outline-none"
+            />
+            {mode === 'server' && (
+              <button
+                onClick={handleBrowse}
+                disabled={browseResolving}
+                className="px-3 py-2 border border-gray-700 hover:border-blue-500 text-gray-300 hover:text-white text-sm rounded-lg transition-colors disabled:opacity-50 shrink-0"
+              >
+                {browseResolving ? '…' : 'Browse'}
+              </button>
+            )}
+          </div>
           {customPath && !customPath.startsWith('~') && !customPath.startsWith('/') && (
-            <p className="text-yellow-600 text-xs mt-1">Treated as <code className="bg-gray-800 px-1 rounded">~/{customPath}</code></p>
+            <p className="text-yellow-600 text-xs">Treated as <code className="bg-gray-800 px-1 rounded">~/{customPath}</code></p>
           )}
-          <p className="text-gray-600 text-xs mt-1">The project directory will be created automatically.</p>
+          {mode === 'fsa' && (
+            <p className="text-gray-600 text-xs">Enter the full path — the project folder will be created automatically.</p>
+          )}
+          {mode === 'server' && (
+            <p className="text-gray-600 text-xs">Press <kbd className="bg-gray-800 px-1 rounded">Ctrl+H</kbd> in the picker to show hidden folders.</p>
+          )}
         </div>
       )}
 
