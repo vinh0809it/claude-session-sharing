@@ -179,22 +179,28 @@ export default function Sender({ onBack }) {
           </div>
         )}
 
-        {/* IDLE — local server not available, show file picker */}
+        {/* IDLE — local server not available */}
         {step === 'idle' && (
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
-            <div className="text-4xl mb-4">📂</div>
-            <p className="text-gray-400 mb-2 text-sm">
-              Open your Claude sessions folder to browse sessions.
+          <div className="bg-gray-900 border border-yellow-900/50 rounded-2xl p-8 text-center">
+            <div className="text-4xl mb-4">⚠️</div>
+            <p className="text-yellow-400 font-medium mb-2 text-sm">Local server not running</p>
+            <p className="text-gray-400 text-sm mb-4">
+              The local server is required to read your Claude sessions.
             </p>
-            <p className="text-gray-600 text-xs mb-6">
-              Navigate to <code className="bg-gray-800 px-1 rounded">~/.claude/projects/</code> and open a project folder.
-              Press <kbd className="bg-gray-800 px-1 rounded">Ctrl+H</kbd> to show hidden folders.
+            <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 text-left mb-6">
+              <p className="text-gray-500 text-xs mb-2">Run this on your machine:</p>
+              <code className="text-green-400 text-xs block">
+                cd server &amp;&amp; node index.js
+              </code>
+            </div>
+            <p className="text-gray-600 text-xs mb-5">
+              Or pick the folder manually (no server needed):
             </p>
             <button
               onClick={handleOpenFolder}
-              className="bg-purple-600 hover:bg-purple-500 text-white font-medium px-6 py-2.5 rounded-xl transition-colors"
+              className="bg-gray-700 hover:bg-gray-600 text-white font-medium px-6 py-2.5 rounded-xl transition-colors text-sm"
             >
-              Open Sessions Folder
+              Pick Sessions Folder Manually
             </button>
             {error && <p className="text-red-400 text-sm mt-4">{error}</p>}
           </div>

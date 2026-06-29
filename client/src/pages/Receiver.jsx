@@ -260,6 +260,11 @@ export default function Receiver({ onBack }) {
         </>
       ) : (
         <>
+          <div className="bg-yellow-950 border border-yellow-900/50 rounded-lg px-3 py-2.5 mb-3">
+            <p className="text-yellow-400 text-xs font-medium mb-1">Local server not running</p>
+            <p className="text-yellow-700 text-xs mb-1">Session won't appear in <code className="bg-yellow-950 px-1">ccs</code> correctly without it.</p>
+            <code className="text-green-400 text-xs">cd server &amp;&amp; node index.js</code>
+          </div>
           {saveFolderHandle ? (
             <div className="flex items-center gap-2 px-3 py-2 bg-blue-900 border border-blue-600 rounded-lg mb-2">
               <span className="text-xs">📁</span>
