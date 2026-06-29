@@ -309,13 +309,18 @@ async function handleHTTP(req, res) {
   // Serve built React client
   const DIST = path.join(__dirname, '..', 'client', 'dist');
   if (fs.existsSync(DIST)) {
-    let filePath = path.join(DIST, url.pathname === '/' ? 'index.html' : url.pathname);
-    if (!fs.existsSync(filePath)) filePath = path.join(DIST, 'index.html'); // SPA fallback
-    const ext = path.extname(filePath);
     const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
                    '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
+    const reqExt = path.extname(url.pathname);
+    let filePath = path.join(DIST, url.pathname === '/' ? 'index.html' : url.pathname);
+    if (!fs.existsSync(filePath)) {
+      // SPA fallback only for navigation requests (no extension = React route like /sender)
+      if (reqExt) { res.writeHead(404); res.end('Not found'); return; }
+      filePath = path.join(DIST, 'index.html');
+    }
     try {
       const data = fs.readFileSync(filePath);
+      const ext = path.extname(filePath);
       res.writeHead(200, { 'Content-Type': mime[ext] || 'application/octet-stream' });
       res.end(data);
     } catch {
