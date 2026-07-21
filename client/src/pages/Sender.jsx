@@ -3,7 +3,7 @@ import { formatDate, formatSize } from '../lib/sessionFiles';
 import { createSignaling } from '../lib/signaling';
 import { RTC_CONFIG, sendFiles } from '../lib/transfer';
 import { dbGet, dbSet } from '../lib/localStore';
-import { listSessionsFromHandle, inferHome } from '../lib/projectUtils';
+import { listSessionsFromHandle, inferHome, folderToDisplayPath } from '../lib/projectUtils';
 
 // step: init | reconnect | setup-pick | loading | listing | empty | waiting | transferring | done | error
 export default function Sender({ onBack }) {
@@ -14,6 +14,7 @@ export default function Sender({ onBack }) {
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState('');
   const [fsaHandle, setFsaHandle] = useState(null);
+  const [fsaHome, setFsaHome] = useState('');
 
   const stepRef = useRef('init');
   const sigRef = useRef(null);
@@ -24,6 +25,8 @@ export default function Sender({ onBack }) {
   useEffect(() => {
     (async () => {
       const handle = await dbGet('claudeHandle').catch(() => null);
+      const home = await dbGet('home').catch(() => null);
+      if (home) setFsaHome(home);
       if (handle) {
         const perm = await handle.queryPermission({ mode: 'readwrite' });
         if (perm === 'granted') { await loadSessions(handle); return; }
@@ -67,6 +70,7 @@ export default function Sender({ onBack }) {
         if (entry.kind === 'directory') folderNames.push(entry.name);
       }
       const home = inferHome(folderNames) || '';
+      setFsaHome(home);
       await dbSet('claudeHandle', handle);
       await dbSet('home', home);
       await loadSessions(handle);
@@ -186,7 +190,7 @@ export default function Sender({ onBack }) {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className="text-white text-sm font-medium truncate">{s.title || s.name}</p>
-                      <p className="text-gray-500 text-xs mt-0.5 truncate font-mono">{s.folder}</p>
+                      <p className="text-gray-500 text-xs mt-0.5 truncate font-mono">{folderToDisplayPath(s.folder, fsaHome)}</p>
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-gray-400 text-xs">{formatSize(s.size)}</p>
