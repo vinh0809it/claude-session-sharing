@@ -10,8 +10,7 @@ import {
   listProjectsFromHandle,
   saveToHandle,
   getCwdFromProjectHandle,
-  homeFromHandle,
-  getProjectsHandle,
+  inferHome,
 } from '../lib/projectUtils';
 
 export default function Receiver({ onBack }) {
@@ -78,15 +77,17 @@ export default function Receiver({ onBack }) {
   async function handlePickFolder() {
     setError('');
     try {
-      const homeHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-      const home = homeFromHandle(homeHandle);
-      const projectsHandle = await getProjectsHandle(homeHandle);
-      await dbSet('claudeHandle', projectsHandle);
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const folderNames = [];
+      for await (const entry of handle.values()) {
+        if (entry.kind === 'directory') folderNames.push(entry.name);
+      }
+      const home = inferHome(folderNames) || '';
+      await dbSet('claudeHandle', handle);
       await dbSet('home', home);
-      await initFsa(projectsHandle, home);
+      await initFsa(handle, home);
     } catch (e) {
-      if (e.name === 'NotFoundError') setError('Could not find .claude/projects inside that folder. Make sure you picked your home directory.');
-      else if (e.name !== 'AbortError') setError(e.message);
+      if (e.name !== 'AbortError') setError(e.message);
     }
   }
 
@@ -196,8 +197,9 @@ export default function Receiver({ onBack }) {
     return (
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-3">
         <p className="text-white text-xs font-medium mb-1">One-time setup</p>
-        <p className="text-gray-500 text-xs mb-3">Pick your home directory (e.g. <code className="bg-gray-800 px-1 rounded">/home/username</code>). The app finds your Claude sessions automatically.</p>
-        <button onClick={handlePickFolder} className="w-full bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium py-1.5 rounded-lg transition-colors">Pick Home Directory</button>
+        <p className="text-gray-500 text-xs mb-1">Pick your <code className="bg-gray-800 px-1 rounded">~/.claude/projects</code> folder.</p>
+        <p className="text-gray-600 text-xs mb-3">Tip: press <kbd className="bg-gray-800 text-gray-400 px-1 py-0.5 rounded">Ctrl+L</kbd> (Linux) or <kbd className="bg-gray-800 text-gray-400 px-1 py-0.5 rounded">Cmd+Shift+G</kbd> (Mac) in the picker to type the path.</p>
+        <button onClick={handlePickFolder} className="w-full bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium py-1.5 rounded-lg transition-colors">Pick Folder</button>
         {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
       </div>
     );

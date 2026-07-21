@@ -3,9 +3,9 @@ import { formatDate, formatSize } from '../lib/sessionFiles';
 import { createSignaling } from '../lib/signaling';
 import { RTC_CONFIG, sendFiles } from '../lib/transfer';
 import { dbGet, dbSet } from '../lib/localStore';
-import { listSessionsFromHandle, homeFromHandle, getProjectsHandle } from '../lib/projectUtils';
+import { listSessionsFromHandle, inferHome } from '../lib/projectUtils';
 
-// step: init | reconnect | setup-pick | setup-home | loading | listing | empty | waiting | transferring | done | error
+// step: init | reconnect | setup-pick | loading | listing | empty | waiting | transferring | done | error
 export default function Sender({ onBack }) {
   const [step, setStep] = useState('init');
   const [sessions, setSessions] = useState([]);
@@ -61,15 +61,17 @@ export default function Sender({ onBack }) {
   async function handlePickFolder() {
     setError('');
     try {
-      const homeHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-      const home = homeFromHandle(homeHandle);
-      const projectsHandle = await getProjectsHandle(homeHandle);
-      await dbSet('claudeHandle', projectsHandle);
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const folderNames = [];
+      for await (const entry of handle.values()) {
+        if (entry.kind === 'directory') folderNames.push(entry.name);
+      }
+      const home = inferHome(folderNames) || '';
+      await dbSet('claudeHandle', handle);
       await dbSet('home', home);
-      await loadSessions(projectsHandle);
+      await loadSessions(handle);
     } catch (e) {
-      if (e.name === 'NotFoundError') setError('Could not find .claude/projects inside that folder. Make sure you picked your home directory.');
-      else if (e.name !== 'AbortError') setError(e.message);
+      if (e.name !== 'AbortError') setError(e.message);
     }
   }
 
@@ -147,13 +149,13 @@ export default function Sender({ onBack }) {
 
         {step === 'setup-pick' && (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
-            <div className="text-4xl mb-4">🏠</div>
-            <p className="text-white font-medium mb-2">Pick your home directory</p>
-            <p className="text-gray-500 text-sm mb-6">
-              Select your home folder (e.g. <code className="bg-gray-800 px-1 rounded">/home/username</code>).
-              The app will find your Claude sessions automatically. Only needed once.
+            <div className="text-4xl mb-4">📁</div>
+            <p className="text-white font-medium mb-2">Pick your <code className="bg-gray-800 px-1 rounded text-purple-300">~/.claude/projects</code> folder</p>
+            <p className="text-gray-500 text-sm mb-2">Only needed once.</p>
+            <p className="text-gray-600 text-xs mb-6">
+              Tip: In the file picker, press <kbd className="bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded text-xs">Ctrl+L</kbd> (Linux) or <kbd className="bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded text-xs">Cmd+Shift+G</kbd> (Mac) to type the path directly.
             </p>
-            <button onClick={handlePickFolder} className="bg-purple-600 hover:bg-purple-500 text-white font-medium px-6 py-2.5 rounded-xl transition-colors">Pick Home Directory</button>
+            <button onClick={handlePickFolder} className="bg-purple-600 hover:bg-purple-500 text-white font-medium px-6 py-2.5 rounded-xl transition-colors">Pick Folder</button>
             {error && <p className="text-red-400 text-sm mt-4">{error}</p>}
           </div>
         )}
