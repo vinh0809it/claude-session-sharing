@@ -97,7 +97,21 @@ export async function listProjectsFromHandle(dirHandle, home) {
   return projects.sort((a, b) => a.displayPath.localeCompare(b.displayPath));
 }
 
-// Infer HOME from existing project folder names (e.g. -home-vinhvh-... → /home/vinhvh)
+// Derive HOME from a home directory handle + platform
+// handle.name = username, platform = Linux → /home/username, Mac → /Users/username
+export function homeFromHandle(handle) {
+  const name = handle.name;
+  const isMac = navigator.userAgent.includes('Mac');
+  return (isMac ? '/Users/' : '/home/') + name;
+}
+
+// Get the ~/.claude/projects handle from a home directory handle
+export async function getProjectsHandle(homeHandle) {
+  const claudeHandle = await homeHandle.getDirectoryHandle('.claude');
+  return claudeHandle.getDirectoryHandle('projects', { create: false });
+}
+
+// Infer HOME from existing project folder names (fallback if home dir not picked)
 export function inferHome(folderNames) {
   const counts = new Map();
   for (const name of folderNames) {

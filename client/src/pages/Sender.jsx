@@ -3,7 +3,7 @@ import { formatDate, formatSize } from '../lib/sessionFiles';
 import { createSignaling } from '../lib/signaling';
 import { RTC_CONFIG, sendFiles } from '../lib/transfer';
 import { dbGet, dbSet } from '../lib/localStore';
-import { listSessionsFromHandle, inferHome } from '../lib/projectUtils';
+import { listSessionsFromHandle, homeFromHandle, getProjectsHandle } from '../lib/projectUtils';
 
 // step: init | reconnect | setup-pick | setup-home | loading | listing | empty | waiting | transferring | done | error
 export default function Sender({ onBack }) {
@@ -14,7 +14,6 @@ export default function Sender({ onBack }) {
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState('');
   const [fsaHandle, setFsaHandle] = useState(null);
-  const [homeInput, setHomeInput] = useState('');
 
   const stepRef = useRef('init');
   const sigRef = useRef(null);
@@ -62,28 +61,16 @@ export default function Sender({ onBack }) {
   async function handlePickFolder() {
     setError('');
     try {
-      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-      const names = [];
-      for await (const h of handle.values()) if (h.kind === 'directory') names.push(h.name);
-      const home = inferHome(names);
-      if (home) {
-        await dbSet('claudeHandle', handle);
-        await dbSet('home', home);
-        await loadSessions(handle);
-      } else {
-        setFsaHandle(handle);
-        setHomeInput('');
-        updateStep('setup-home');
-      }
-    } catch (e) { if (e.name !== 'AbortError') setError(e.message); }
-  }
-
-  async function handleConfirmHome() {
-    const home = homeInput.trim();
-    if (!home.startsWith('/')) { setError('Enter an absolute path like /home/username'); return; }
-    await dbSet('claudeHandle', fsaHandle);
-    await dbSet('home', home);
-    await loadSessions(fsaHandle);
+      const homeHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const home = homeFromHandle(homeHandle);
+      const projectsHandle = await getProjectsHandle(homeHandle);
+      await dbSet('claudeHandle', projectsHandle);
+      await dbSet('home', home);
+      await loadSessions(projectsHandle);
+    } catch (e) {
+      if (e.name === 'NotFoundError') setError('Could not find .claude/projects inside that folder. Make sure you picked your home directory.');
+      else if (e.name !== 'AbortError') setError(e.message);
+    }
   }
 
   async function handleRefresh() {
@@ -160,23 +147,14 @@ export default function Sender({ onBack }) {
 
         {step === 'setup-pick' && (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
-            <div className="text-4xl mb-4">📂</div>
-            <p className="text-white font-medium mb-2">One-time setup</p>
-            <p className="text-gray-500 text-sm mb-2">The browser requires you to pick the folder once — it's remembered forever after.</p>
-            <p className="text-gray-600 text-xs mb-6">Navigate to <code className="bg-gray-800 px-1 rounded">~/.claude/projects</code> and click Select. Press <kbd className="bg-gray-800 px-1 rounded">Ctrl+H</kbd> for hidden folders.</p>
-            <button onClick={handlePickFolder} className="bg-purple-600 hover:bg-purple-500 text-white font-medium px-6 py-2.5 rounded-xl transition-colors">Pick ~/.claude/projects</button>
+            <div className="text-4xl mb-4">🏠</div>
+            <p className="text-white font-medium mb-2">Pick your home directory</p>
+            <p className="text-gray-500 text-sm mb-6">
+              Select your home folder (e.g. <code className="bg-gray-800 px-1 rounded">/home/username</code>).
+              The app will find your Claude sessions automatically. Only needed once.
+            </p>
+            <button onClick={handlePickFolder} className="bg-purple-600 hover:bg-purple-500 text-white font-medium px-6 py-2.5 rounded-xl transition-colors">Pick Home Directory</button>
             {error && <p className="text-red-400 text-sm mt-4">{error}</p>}
-          </div>
-        )}
-
-        {step === 'setup-home' && (
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8">
-            <p className="text-white font-medium mb-1">Enter your home directory</p>
-            <p className="text-gray-500 text-sm mb-4">Could not detect it automatically. Enter it once.</p>
-            <input type="text" value={homeInput} onChange={(e) => setHomeInput(e.target.value)} placeholder="/home/username"
-              className="w-full bg-gray-950 border border-gray-700 focus:border-purple-500 rounded-xl px-4 py-3 text-sm font-mono text-gray-300 placeholder-gray-600 outline-none mb-4" />
-            {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
-            <button onClick={handleConfirmHome} className="w-full bg-purple-600 hover:bg-purple-500 text-white font-medium py-2.5 rounded-xl transition-colors">Continue</button>
           </div>
         )}
 

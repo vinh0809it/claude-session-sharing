@@ -10,7 +10,8 @@ import {
   listProjectsFromHandle,
   saveToHandle,
   getCwdFromProjectHandle,
-  inferHome,
+  homeFromHandle,
+  getProjectsHandle,
 } from '../lib/projectUtils';
 
 export default function Receiver({ onBack }) {
@@ -31,8 +32,6 @@ export default function Receiver({ onBack }) {
   const [fsaHandle, setFsaHandle] = useState(null);
   const [fsaHome, setFsaHome] = useState('');
   const [fsaReady, setFsaReady] = useState(false);
-  const [setupStep, setSetupStep] = useState('pick'); // 'pick' | 'home'
-  const [homeInput, setHomeInput] = useState('');
 
   const stepRef = useRef('idle');
   const sigRef = useRef(null);
@@ -72,36 +71,25 @@ export default function Receiver({ onBack }) {
     try {
       const perm = await fsaHandle.requestPermission({ mode: 'readwrite' });
       if (perm === 'granted') await initFsa(fsaHandle, fsaHome);
-      else setSetupStep('pick');
+      // permission denied — user will need to re-pick
     } catch (e) { setError(e.message); }
   }
 
   async function handlePickFolder() {
     setError('');
     try {
-      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-      const names = [];
-      for await (const h of handle.values()) if (h.kind === 'directory') names.push(h.name);
-      const home = inferHome(names);
-      if (home) {
-        await dbSet('claudeHandle', handle);
-        await dbSet('home', home);
-        await initFsa(handle, home);
-      } else {
-        setFsaHandle(handle);
-        setHomeInput('');
-        setSetupStep('home');
-      }
-    } catch (e) { if (e.name !== 'AbortError') setError(e.message); }
+      const homeHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const home = homeFromHandle(homeHandle);
+      const projectsHandle = await getProjectsHandle(homeHandle);
+      await dbSet('claudeHandle', projectsHandle);
+      await dbSet('home', home);
+      await initFsa(projectsHandle, home);
+    } catch (e) {
+      if (e.name === 'NotFoundError') setError('Could not find .claude/projects inside that folder. Make sure you picked your home directory.');
+      else if (e.name !== 'AbortError') setError(e.message);
+    }
   }
 
-  async function handleConfirmHome() {
-    const home = homeInput.trim();
-    if (!home.startsWith('/')) { setError('Enter an absolute path like /home/username'); return; }
-    await dbSet('claudeHandle', fsaHandle);
-    await dbSet('home', home);
-    await initFsa(fsaHandle, home);
-  }
 
   async function handleConnect() {
     const code = codeInput.trim().toUpperCase();
@@ -205,22 +193,11 @@ export default function Receiver({ onBack }) {
         </div>
       );
     }
-    if (setupStep === 'pick') {
-      return (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-3">
-          <p className="text-white text-xs font-medium mb-1">One-time setup required</p>
-          <p className="text-gray-500 text-xs mb-3">Pick your <code className="bg-gray-800 px-1 rounded">~/.claude/projects</code> folder to save sessions. Press <kbd className="bg-gray-800 px-1 rounded">Ctrl+H</kbd> for hidden folders.</p>
-          <button onClick={handlePickFolder} className="w-full bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium py-1.5 rounded-lg transition-colors">Pick Folder</button>
-          {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
-        </div>
-      );
-    }
     return (
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-3">
-        <p className="text-white text-xs font-medium mb-1">Enter your home directory</p>
-        <input type="text" value={homeInput} onChange={(e) => setHomeInput(e.target.value)} placeholder="/home/username"
-          className="w-full bg-gray-950 border border-gray-700 focus:border-purple-500 rounded-lg px-3 py-2 text-xs font-mono text-gray-300 placeholder-gray-600 outline-none mb-2" />
-        <button onClick={handleConfirmHome} className="w-full bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium py-1.5 rounded-lg transition-colors">Save &amp; Continue</button>
+        <p className="text-white text-xs font-medium mb-1">One-time setup</p>
+        <p className="text-gray-500 text-xs mb-3">Pick your home directory (e.g. <code className="bg-gray-800 px-1 rounded">/home/username</code>). The app finds your Claude sessions automatically.</p>
+        <button onClick={handlePickFolder} className="w-full bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium py-1.5 rounded-lg transition-colors">Pick Home Directory</button>
         {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
       </div>
     );
